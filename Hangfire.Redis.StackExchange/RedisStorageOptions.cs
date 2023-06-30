@@ -15,6 +15,7 @@
 // License along with Hangfire.Redis.StackExchange. If not, see <http://www.gnu.org/licenses/>.
 
 using System;
+using System.Collections.Generic;
 
 namespace Hangfire.Redis.StackExchange
 {
@@ -33,6 +34,10 @@ namespace Hangfire.Redis.StackExchange
             DeletedListSize = 499;
             LifoQueues = new string[0];
             UseTransactions = true;
+            UseResourceManagement = false;
+            CpuLimit = null;
+            MemoryLimit = null;
+            QueueOptions = new List<QueueOptions>();
         }
 
         public TimeSpan InvisibilityTimeout { get; set; }
@@ -45,5 +50,9 @@ namespace Hangfire.Redis.StackExchange
         public int DeletedListSize { get; set; }
         public string[] LifoQueues { get; set; }
         public bool UseTransactions { get; set; }
+        public bool UseResourceManagement { get; set; }
+        public string CpuLimit { get; set; }
+        public string MemoryLimit { get; set; }
+        public IList<QueueOptions> QueueOptions { get; set; }
     }
 }

@@ -45,6 +45,8 @@ namespace Hangfire.Redis.StackExchange
 
             JobId = jobId;
             Queue = queue;
+
+            _storage.ResourceBudgetManager?.AddFetchedJob(this);
         }
 
         public string JobId { get; }
@@ -96,6 +98,7 @@ namespace Hangfire.Redis.StackExchange
         {
             databaseAsync.ListRemoveAsync(_storage.GetRedisKey($"queue:{Queue}:dequeued"), JobId, -1);
             databaseAsync.HashDeleteAsync(_storage.GetRedisKey($"job:{JobId}"), new RedisValue[] { "Fetched", "Checked" });
+            _storage.ResourceBudgetManager?.RemoveFetchedJob(this);
         }
     }
 }

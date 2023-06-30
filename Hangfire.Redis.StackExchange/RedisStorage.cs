@@ -34,6 +34,7 @@ namespace Hangfire.Redis.StackExchange
         private readonly IConnectionMultiplexer _connectionMultiplexer;
         private readonly RedisSubscription _subscription;
         private readonly ConfigurationOptions _redisOptions;
+        private readonly ResourceBudgetManager _resourceBudgetManager;
 
         public RedisStorage()
             : this("localhost:6379")
@@ -48,6 +49,8 @@ namespace Hangfire.Redis.StackExchange
             _redisOptions = ConfigurationOptions.Parse(_connectionMultiplexer.Configuration);
             
             _subscription = new RedisSubscription(this, _connectionMultiplexer.GetSubscriber());
+            if (_options.UseResourceManagement)
+                _resourceBudgetManager = new ResourceBudgetManager(_options);
         }
 
         public RedisStorage(string connectionString, RedisStorageOptions options = null)
@@ -63,6 +66,8 @@ namespace Hangfire.Redis.StackExchange
 
             _connectionMultiplexer = ConnectionMultiplexer.Connect(connectionString);
             _subscription = new RedisSubscription(this, _connectionMultiplexer.GetSubscriber());
+            if (_options.UseResourceManagement)
+                _resourceBudgetManager = new ResourceBudgetManager(_options);
         }
 
         public string ConnectionString => _connectionMultiplexer.Configuration;
@@ -78,6 +83,8 @@ namespace Hangfire.Redis.StackExchange
         internal string[] LifoQueues => _options.LifoQueues;
 
         internal bool UseTransactions => _options.UseTransactions;
+
+        internal ResourceBudgetManager ResourceBudgetManager => _resourceBudgetManager;
 
         public override IMonitoringApi GetMonitoringApi()
         {

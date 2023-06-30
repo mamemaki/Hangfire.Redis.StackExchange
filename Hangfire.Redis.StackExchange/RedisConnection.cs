@@ -192,27 +192,49 @@ namespace Hangfire.Redis.StackExchange
         {
             if (queues == null) throw new ArgumentNullException(nameof(queues));
 
-            string jobId = null;
-            string queueName = null;
-            do
+            while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                for (int i = 0; i < queues.Length; i++)
+                if (_storage.ResourceBudgetManager != null)
                 {
-                    queueName = queues[i];
-                    var queueKey = _storage.GetRedisKey($"queue:{queueName}");
-                    var fetchedKey = _storage.GetRedisKey($"queue:{queueName}:dequeued");
-                    jobId = Redis.ListRightPopLeftPush(queueKey, fetchedKey);
-                    if (jobId != null) break;
+                    lock (_storage.ResourceBudgetManager)
+                    {
+                        var limitReached = _storage.ResourceBudgetManager.IsUsageLimitReached(this);
+                        if (!limitReached)
+                        {
+                            var fecthedJob = TryFetchJob(queues);
+                            if (fecthedJob != null)
+                                return fecthedJob;
+                        }
+                    }
+                }
+                else
+                {
+                    var fecthedJob = TryFetchJob(queues);
+                    if (fecthedJob != null)
+                        return fecthedJob;
                 }
 
-                if (jobId == null)
-                {
-                    _subscription.WaitForJob(_fetchTimeout, cancellationToken);
-                }
+                _subscription.WaitForJob(_fetchTimeout, cancellationToken);
             }
-            while (jobId == null);
+        }
+
+        private IFetchedJob TryFetchJob([NotNull] string[] queues)
+        {
+            string jobId = null;
+            string queueName = null;
+            for (int i = 0; i < queues.Length; i++)
+            {
+                queueName = queues[i];
+                var queueKey = _storage.GetRedisKey($"queue:{queueName}");
+                var fetchedKey = _storage.GetRedisKey($"queue:{queueName}:dequeued");
+                jobId = Redis.ListRightPopLeftPush(queueKey, fetchedKey);
+                if (jobId != null) break;
+            }
+
+            if (jobId == null)
+                return null;
 
             // The job was fetched by the server. To provide reliability,
             // we should ensure, that the job will be performed and acquired
