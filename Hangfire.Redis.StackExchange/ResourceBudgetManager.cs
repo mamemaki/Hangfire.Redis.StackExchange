@@ -15,6 +15,7 @@
 // License along with Hangfire.Redis.StackExchange. If not, see <http://www.gnu.org/licenses/>.
 
 using Hangfire.Common;
+using Hangfire.Storage;
 using System;
 using System.Collections.Generic;
 
@@ -30,10 +31,12 @@ namespace Hangfire.Redis.StackExchange
             public bool FetchIndividualMemoryRequests { get; set; }
         }
 
+        private readonly object lockObj = new object();
         private readonly IList<RedisFetchedJob> _fetchedJobs;
         private readonly int _cpuLimit;
         private readonly long _memoryLimit;
         private readonly IDictionary<string, QueueConfig> _queueConfigDict;
+        private bool? _isUsageLimitReachedResultCache;
 
         public ResourceBudgetManager(RedisStorageOptions options)
         {
@@ -177,8 +180,11 @@ namespace Hangfire.Redis.StackExchange
 
         public void RemoveFetchedJob(RedisFetchedJob fetchedJob)
         {
-            lock (this)
+            lock (lockObj)
+            {
                 _fetchedJobs.Remove(fetchedJob);
+                _isUsageLimitReachedResultCache = null;
+            }
         }
 
         public void AddFetchedJob(RedisFetchedJob fetchedJob)
@@ -186,21 +192,41 @@ namespace Hangfire.Redis.StackExchange
             _fetchedJobs.Add(fetchedJob);
         }
 
+        public IFetchedJob TryFetchJob(string[] queues, RedisConnection connection,
+            Func<string[], IFetchedJob> tryFetchJob)
+        {
+            lock (lockObj)
+            {
+                var limitReached = IsUsageLimitReached(connection);
+                if (!limitReached)
+                {
+                    var fecthedJob = tryFetchJob(queues);
+                    if (fecthedJob != null)
+                        return fecthedJob;
+                }
+
+                return null;
+            }
+        }
+
         /// <summary>
         /// Get whether resource usage limit reached or not
         /// </summary>
         /// <returns>Return true if the current resource usage reaches limit, otherwise return false</returns>
-        public bool IsUsageLimitReached(RedisConnection connection)
+        private bool IsUsageLimitReached(RedisConnection connection)
         {
+            if (_isUsageLimitReachedResultCache.HasValue)
+                return _isUsageLimitReachedResultCache.Value;
+
             var cpuUsage = GetCurrentCpuUsage(connection);
             if (cpuUsage >= _cpuLimit)
-                return true;
+                return (_isUsageLimitReachedResultCache = true).Value;
 
             var memoryUsage = GetCurrentMemoryUsage(connection);
             if (memoryUsage >= _memoryLimit)
-                return true;
+                return (_isUsageLimitReachedResultCache = true).Value;
 
-            return false;
+            return (_isUsageLimitReachedResultCache = false).Value;
         }
 
         private int GetCurrentCpuUsage(RedisConnection connection)

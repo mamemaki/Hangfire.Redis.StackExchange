@@ -196,25 +196,11 @@ namespace Hangfire.Redis.StackExchange
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (_storage.ResourceBudgetManager != null)
-                {
-                    lock (_storage.ResourceBudgetManager)
-                    {
-                        var limitReached = _storage.ResourceBudgetManager.IsUsageLimitReached(this);
-                        if (!limitReached)
-                        {
-                            var fecthedJob = TryFetchJob(queues);
-                            if (fecthedJob != null)
-                                return fecthedJob;
-                        }
-                    }
-                }
-                else
-                {
-                    var fecthedJob = TryFetchJob(queues);
-                    if (fecthedJob != null)
-                        return fecthedJob;
-                }
+                var fecthedJob = _storage.ResourceBudgetManager != null ?
+                    _storage.ResourceBudgetManager.TryFetchJob(queues, this, TryFetchJob) :
+                    TryFetchJob(queues);
+                if (fecthedJob != null)
+                    return fecthedJob;
 
                 _subscription.WaitForJob(_fetchTimeout, cancellationToken);
             }
