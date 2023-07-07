@@ -32,7 +32,7 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
         }
 
         private readonly object lockObj = new object();
-        private readonly IList<RedisFetchedJob> _fetchedJobs;
+        private readonly IDictionary<string, FetchedJobInfo> _fetchedJobs;
         private readonly int _cpuLimit;
         private readonly long _memoryLimit;
         private readonly IDictionary<string, QueueConfig> _queueConfigDict;
@@ -40,7 +40,7 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
 
         public ResourceBudgetManager(RedisStorageOptions options)
         {
-            _fetchedJobs = new List<RedisFetchedJob>();
+            _fetchedJobs = new Dictionary<string, FetchedJobInfo>();
 
             _cpuLimit = Environment.ProcessorCount * 1000;
             if (options.CpuLimit != null)
@@ -69,7 +69,7 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
             }
         }
 
-        internal IList<RedisFetchedJob> FetchedJobs => _fetchedJobs;
+        internal IDictionary<string, FetchedJobInfo> FetchedJobs => _fetchedJobs;
         internal int CpuLimit => _cpuLimit;
         internal long MemoryLimit => _memoryLimit;
 
@@ -77,14 +77,18 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
         {
             lock (lockObj)
             {
-                _fetchedJobs.Remove(fetchedJob);
+                _fetchedJobs.Remove(fetchedJob.JobId);
                 _isUsageLimitReachedResultCache = null;
             }
         }
 
         public void AddFetchedJob(RedisFetchedJob fetchedJob)
         {
-            _fetchedJobs.Add(fetchedJob);
+            _fetchedJobs.Add(fetchedJob.JobId, new FetchedJobInfo()
+            {
+                Job = fetchedJob,
+            });
+            _isUsageLimitReachedResultCache = null;
         }
 
         public IFetchedJob TryFetchJob(string[] queues, RedisConnection connection,
@@ -127,16 +131,19 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
         private int GetCurrentCpuUsage(RedisConnection connection)
         {
             var totalCpuUsage = 0;
-            foreach (var fetchedJob in _fetchedJobs)
+            foreach (var fetchedJob in _fetchedJobs.Values)
             {
-                _queueConfigDict.TryGetValue(fetchedJob.Queue, out var queueConfig);
-                int? cpuUsage = null;
-                if (queueConfig?.FetchIndividualCpuRequests == true)
-                    cpuUsage = Utils.ConvertStringToCpuMilliseconds(
-                        SerializationHelper.Deserialize<string>(
-                            connection.GetJobParameter(fetchedJob.JobId, "CpuRequest")));
-                cpuUsage ??= queueConfig?.CpuRequest ?? 0;
-                totalCpuUsage += cpuUsage.Value;
+                if (!fetchedJob.CpuUsage.HasValue)
+                {
+                    _queueConfigDict.TryGetValue(fetchedJob.Job.Queue, out var queueConfig);
+                    int? cpuUsage = null;
+                    if (queueConfig?.FetchIndividualCpuRequests == true)
+                        cpuUsage = Utils.ConvertStringToCpuMilliseconds(
+                            SerializationHelper.Deserialize<string>(
+                                connection.GetJobParameter(fetchedJob.JobId, "CpuRequest")));
+                    fetchedJob.CpuUsage ??= queueConfig?.CpuRequest ?? 0;
+                }
+                totalCpuUsage += fetchedJob.CpuUsage.Value;
             }
             return totalCpuUsage;
         }
@@ -144,15 +151,19 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
         private long GetCurrentMemoryUsage(RedisConnection connection)
         {
             var totalMemoryUsage = 0L;
-            foreach (var fetchedJob in _fetchedJobs)
+            foreach (var fetchedJob in _fetchedJobs.Values)
             {
-                _queueConfigDict.TryGetValue(fetchedJob.Queue, out var queueConfig);
-                long? memoryUsage = null;
-                if (queueConfig?.FetchIndividualMemoryRequests == true)
-                    memoryUsage = Utils.ConvertStringToMemoryBytes(
-                        SerializationHelper.Deserialize<string>(connection.GetJobParameter(fetchedJob.JobId, "MemoryRequest")));
-                memoryUsage ??= queueConfig?.MemoryRequest ?? 0;
-                totalMemoryUsage += memoryUsage.Value;
+                if (!fetchedJob.MemoryUsage.HasValue)
+                {
+                    _queueConfigDict.TryGetValue(fetchedJob.Job.Queue, out var queueConfig);
+                    long? memoryUsage = null;
+                    if (queueConfig?.FetchIndividualMemoryRequests == true)
+                        memoryUsage = Utils.ConvertStringToMemoryBytes(
+                            SerializationHelper.Deserialize<string>(
+                                connection.GetJobParameter(fetchedJob.JobId, "MemoryRequest")));
+                    fetchedJob.MemoryUsage ??= queueConfig?.MemoryRequest ?? 0;
+                }
+                totalMemoryUsage += fetchedJob.MemoryUsage.Value;
             }
             return totalMemoryUsage;
         }
