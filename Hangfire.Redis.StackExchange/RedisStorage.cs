@@ -20,6 +20,7 @@ using System.Linq;
 using Hangfire.Annotations;
 using Hangfire.Dashboard;
 using Hangfire.Logging;
+using Hangfire.Redis.StackExchange.ResourceBudgetManagement;
 using Hangfire.Server;
 using Hangfire.States;
 using Hangfire.Storage;
