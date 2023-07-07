@@ -59,6 +59,8 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
             _queueConfigDict = new Dictionary<string, QueueConfig>();
             foreach (var queueOption in options.QueueOptions)
             {
+                if (string.IsNullOrEmpty(queueOption.QueueName))
+                    throw new Exception($"QueueName must be set");
                 _queueConfigDict[queueOption.QueueName] = new QueueConfig()
                 {
                     CpuRequest = Utils.ConvertStringToCpuMilliseconds(queueOption.CpuRequest),
@@ -91,12 +93,13 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
             _isUsageLimitReachedResultCache = null;
         }
 
-        public IFetchedJob TryFetchJob(string[] queues, RedisConnection connection,
+        public IFetchedJob TryFetchJob(string[] queues, 
+            IJobResourceRequirementAccessor jobResReqAccessor,
             Func<string[], IFetchedJob> tryFetchJob)
         {
             lock (lockObj)
             {
-                var limitReached = IsUsageLimitReached(connection);
+                var limitReached = IsUsageLimitReached(jobResReqAccessor);
                 if (!limitReached)
                 {
                     var fecthedJob = tryFetchJob(queues);
@@ -112,23 +115,23 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
         /// Get whether resource usage limit reached or not
         /// </summary>
         /// <returns>Return true if the current resource usage reaches limit, otherwise return false</returns>
-        private bool IsUsageLimitReached(RedisConnection connection)
+        private bool IsUsageLimitReached(IJobResourceRequirementAccessor jobResReqAccessor)
         {
             if (_isUsageLimitReachedResultCache.HasValue)
                 return _isUsageLimitReachedResultCache.Value;
 
-            var cpuUsage = GetCurrentCpuUsage(connection);
+            var cpuUsage = GetCpuUsage(jobResReqAccessor);
             if (cpuUsage >= _cpuLimit)
                 return (_isUsageLimitReachedResultCache = true).Value;
 
-            var memoryUsage = GetCurrentMemoryUsage(connection);
+            var memoryUsage = GetMemoryUsage(jobResReqAccessor);
             if (memoryUsage >= _memoryLimit)
                 return (_isUsageLimitReachedResultCache = true).Value;
 
             return (_isUsageLimitReachedResultCache = false).Value;
         }
 
-        private int GetCurrentCpuUsage(RedisConnection connection)
+        private int GetCpuUsage(IJobResourceRequirementAccessor jobResReqAccessor)
         {
             var totalCpuUsage = 0;
             foreach (var fetchedJob in _fetchedJobs.Values)
@@ -136,11 +139,9 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
                 if (!fetchedJob.CpuUsage.HasValue)
                 {
                     _queueConfigDict.TryGetValue(fetchedJob.Job.Queue, out var queueConfig);
-                    int? cpuUsage = null;
                     if (queueConfig?.FetchIndividualCpuRequests == true)
-                        cpuUsage = Utils.ConvertStringToCpuMilliseconds(
-                            SerializationHelper.Deserialize<string>(
-                                connection.GetJobParameter(fetchedJob.JobId, "CpuRequest")));
+                        fetchedJob.CpuUsage = Utils.ConvertStringToCpuMilliseconds(
+                            jobResReqAccessor.GetCpuRequest(fetchedJob.JobId));
                     fetchedJob.CpuUsage ??= queueConfig?.CpuRequest ?? 0;
                 }
                 totalCpuUsage += fetchedJob.CpuUsage.Value;
@@ -148,7 +149,7 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
             return totalCpuUsage;
         }
 
-        private long GetCurrentMemoryUsage(RedisConnection connection)
+        private long GetMemoryUsage(IJobResourceRequirementAccessor jobResReqAccessor)
         {
             var totalMemoryUsage = 0L;
             foreach (var fetchedJob in _fetchedJobs.Values)
@@ -156,11 +157,9 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
                 if (!fetchedJob.MemoryUsage.HasValue)
                 {
                     _queueConfigDict.TryGetValue(fetchedJob.Job.Queue, out var queueConfig);
-                    long? memoryUsage = null;
                     if (queueConfig?.FetchIndividualMemoryRequests == true)
-                        memoryUsage = Utils.ConvertStringToMemoryBytes(
-                            SerializationHelper.Deserialize<string>(
-                                connection.GetJobParameter(fetchedJob.JobId, "MemoryRequest")));
+                        fetchedJob.MemoryUsage = Utils.ConvertStringToMemoryBytes(
+                            jobResReqAccessor.GetMemoryRequest(fetchedJob.JobId));
                     fetchedJob.MemoryUsage ??= queueConfig?.MemoryRequest ?? 0;
                 }
                 totalMemoryUsage += fetchedJob.MemoryUsage.Value;

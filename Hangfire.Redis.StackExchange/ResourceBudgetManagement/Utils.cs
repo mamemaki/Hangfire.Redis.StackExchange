@@ -7,10 +7,10 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
     internal class Utils
     {
         /// <summary>
-        /// Pase string to cpu milliseconds(0 to 1000)
+        /// Pase string to cpu milliseconds
         /// </summary>
         /// <param name="s"></param>
-        /// <returns>0 to 1000</returns>
+        /// <returns></returns>
         /// <exception cref="FormatException"></exception>
         public static int ConvertStringToCpuMilliseconds(string s)
         {
@@ -27,11 +27,19 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
                     found = true;
                     break;
                 }
-            if (found == false)
-                throw new FormatException($"No separate position found in value '{s}'.");
+            string numberPart;
+            string sizePart;
+            if (found)
+            {
+                numberPart = s.Substring(0, sepPos).Trim();
+                sizePart = s.Substring(sepPos, s.Length - sepPos).Trim();
+            }
+            else
+            {
+                numberPart = s.Trim();
+                sizePart = "";
+            }
 
-            string numberPart = s.Substring(0, sepPos).Trim();
-            string sizePart = s.Substring(sepPos, s.Length - sepPos).Trim();
 
             if (!double.TryParse(numberPart, out var number))
                 throw new FormatException($"No number found in value '{s}'.");
@@ -39,25 +47,19 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
             switch (sizePart)
             {
                 case "m":
-                    // Allowed range: 0 to 1000
-                    if (number > 1000)
-                        throw new FormatException($"The number must be less than 1000 '{numberPart}'.");
-                    return Math.Min((int)number, 100);
+                    return (int)number;
                 case "":
-                    // Allowed range: 0.001 to 1
-                    if (number > 1)
-                        throw new FormatException($"The number must be less than 1.0 '{numberPart}'.");
-                    return (int)(number * 100);
+                    return (int)(number * 1000);
                 default:
                     throw new FormatException($"Unknown size part '{sizePart}'.");
             }
         }
 
         /// <summary>
-        /// Pase string to memory bytes(0 to int.MaxValue)
+        /// Pase string to memory bytes(0 to long.MaxValue)
         /// </summary>
         /// <param name="s"></param>
-        /// <returns>0 to int.MaxValue</returns>
+        /// <returns>0 to long.MaxValue</returns>
         /// <exception cref="FormatException"></exception>
         public static long ConvertStringToMemoryBytes(string s)
         {
@@ -74,17 +76,22 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
                     found = true;
                     break;
                 }
-            if (found == false)
-                throw new FormatException($"No separate position found in value '{s}'.");
 
-            string numberPart = s.Substring(0, sepPos).Trim();
-            string sizePart = s.Substring(sepPos, s.Length - sepPos).Trim();
+            string numberPart;
+            string sizePart;
+            if (found)
+            {
+                numberPart = s.Substring(0, sepPos).Trim();
+                sizePart = s.Substring(sepPos, s.Length - sepPos).Trim();
+            }
+            else
+            {
+                numberPart = s.Trim();
+                sizePart = "";
+            }
 
             if (!long.TryParse(numberPart, out var number))
                 throw new FormatException($"No number found in value '{s}'.");
-
-            if (number > long.MaxValue)
-                throw new FormatException($"The number must be less than {long.MaxValue} '{numberPart}'.");
 
             switch (sizePart)
             {

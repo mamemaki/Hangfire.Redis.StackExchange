@@ -16,6 +16,7 @@
 
 using Hangfire.Annotations;
 using Hangfire.Common;
+using Hangfire.Redis.StackExchange.ResourceBudgetManagement;
 using Hangfire.Server;
 using Hangfire.Storage;
 using StackExchange.Redis;
@@ -29,7 +30,7 @@ using System.Threading.Tasks;
 
 namespace Hangfire.Redis.StackExchange
 {
-    internal class RedisConnection : JobStorageConnection
+    internal class RedisConnection : JobStorageConnection, IJobResourceRequirementAccessor
     {
         private readonly RedisStorage _storage;
         private readonly RedisSubscription _subscription;
@@ -488,6 +489,18 @@ namespace Hangfire.Redis.StackExchange
             if (keyValuePairs == null) throw new ArgumentNullException(nameof(keyValuePairs));
 
             Redis.HashSet(_storage.GetRedisKey(key), keyValuePairs.ToHashEntries());
+        }
+
+        string IJobResourceRequirementAccessor.GetCpuRequest(string jobId)
+        {
+            return SerializationHelper.Deserialize<string>(
+                GetJobParameter(jobId, "CpuRequest"));
+        }
+
+        string IJobResourceRequirementAccessor.GetMemoryRequest(string jobId)
+        {
+            return SerializationHelper.Deserialize<string>(
+                GetJobParameter(jobId, "MemoryRequest"));
         }
     }
 }
