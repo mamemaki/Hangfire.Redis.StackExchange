@@ -145,8 +145,7 @@ namespace Hangfire.Redis.StackExchange
             {
                 if (TimedOutByFetchedTime(fetched) || TimedOutByCheckedTime(fetched, @checked))
                 {
-                    var fetchedJob = new RedisFetchedJob(_storage, connection.Redis, jobId, queue);
-                    fetchedJob.Dispose();
+                    RedisFetchedJob.Requeue(_storage, connection.Redis, jobId, queue);
 
                     return true;
                 }
