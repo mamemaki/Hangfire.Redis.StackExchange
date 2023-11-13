@@ -35,6 +35,7 @@ namespace Hangfire.Redis.StackExchange
             LifoQueues = new string[0];
             UseTransactions = true;
             UseResourceManagement = false;
+            UsageLimitReachedWaitTimeBase = TimeSpan.FromSeconds(1);
             CpuLimit = null;
             MemoryLimit = null;
             QueueOptions = new List<QueueOptions>();
@@ -51,6 +52,7 @@ namespace Hangfire.Redis.StackExchange
         public string[] LifoQueues { get; set; }
         public bool UseTransactions { get; set; }
         public bool UseResourceManagement { get; set; }
+        public TimeSpan UsageLimitReachedWaitTimeBase { get; set; }
         public string CpuLimit { get; set; }
         public string MemoryLimit { get; set; }
         public IList<QueueOptions> QueueOptions { get; set; }

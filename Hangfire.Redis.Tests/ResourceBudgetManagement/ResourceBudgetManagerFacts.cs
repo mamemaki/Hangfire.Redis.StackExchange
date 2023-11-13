@@ -6,6 +6,7 @@ using StackExchange.Redis;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Xunit;
 
 namespace Hangfire.Redis.Tests.ResourceBudgetManagement
@@ -27,17 +28,42 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
             }
         }
 
-        class RedisStorageConnectionMock : IJobResourceRequirementAccessor
+        class RedisStorageConnectionMock : IRedisConnectionForResourceBudgetManager
         {
             private ResourceBudgetManager _resourceBudgetManager;
             private Queue<JobInfo> _jobQueue;
+            private List<JobInfo> _dequeuedJobs;
             public RedisStorageConnectionMock(ResourceBudgetManager resourceBudgetManager)
             {
                 _resourceBudgetManager = resourceBudgetManager;
                 _jobQueue = new Queue<JobInfo>();
+                _dequeuedJobs = new List<JobInfo>();
             }
 
             public Queue<JobInfo> JobQueue => _jobQueue;
+
+            public string DequeueJob(string queueName)
+            {
+                if (_jobQueue.TryDequeue(out var fetchedJob))
+                {
+                    _dequeuedJobs.Add(fetchedJob);
+                    return fetchedJob.FetchedJob.JobId;
+                }
+                return null;
+            }
+
+            public IFetchedJob OnJobFetched(string jobId, string queueName)
+            {
+                return _dequeuedJobs.FirstOrDefault(s => s.FetchedJob.JobId == jobId).FetchedJob;
+            }
+
+            public void Requeue(string jobId, string queueName)
+            {
+            }
+
+            public void Sleep(TimeSpan timeout, CancellationToken cancellationToken)
+            {
+            }
 
             public string GetCpuRequest(string jobId)
             {
@@ -115,6 +141,7 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
         [MemberData(nameof(TryFetchJobTestData))]
         internal void TryFetchJob(JobInfo[] jobs, string expectedFetchedJobId)
         {
+            var cts = new CancellationTokenSource();
             var resourceBudgetManager = new ResourceBudgetManager(_redisStorageOptionsDefault);
             var connection = new RedisStorageConnectionMock(resourceBudgetManager);
 
@@ -125,7 +152,7 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
             }
 
             var fecthedJobActual = resourceBudgetManager.TryFetchJob(
-                new string[] { "q1" }, connection, connection.TryFetchJob);
+                new string[] { "q1" }, connection, cts.Token);
             Assert.Equal(expectedFetchedJobId, fecthedJobActual?.JobId);
         }
     }

@@ -30,7 +30,7 @@ using System.Threading.Tasks;
 
 namespace Hangfire.Redis.StackExchange
 {
-    internal class RedisConnection : JobStorageConnection, IJobResourceRequirementAccessor
+    internal class RedisConnection : JobStorageConnection, IRedisConnectionForResourceBudgetManager
     {
         private readonly RedisStorage _storage;
         private readonly RedisSubscription _subscription;
@@ -198,7 +198,7 @@ namespace Hangfire.Redis.StackExchange
                 cancellationToken.ThrowIfCancellationRequested();
 
                 var fecthedJob = _storage.ResourceBudgetManager != null ?
-                    _storage.ResourceBudgetManager.TryFetchJob(queues, this, TryFetchJob) :
+                    _storage.ResourceBudgetManager.TryFetchJob(queues, this, cancellationToken) :
                     TryFetchJob(queues);
                 if (fecthedJob != null)
                     return fecthedJob;
@@ -209,20 +209,27 @@ namespace Hangfire.Redis.StackExchange
 
         private IFetchedJob TryFetchJob([NotNull] string[] queues)
         {
-            string jobId = null;
-            string queueName = null;
             for (int i = 0; i < queues.Length; i++)
             {
-                queueName = queues[i];
-                var queueKey = _storage.GetRedisKey($"queue:{queueName}");
-                var fetchedKey = _storage.GetRedisKey($"queue:{queueName}:dequeued");
-                jobId = Redis.ListRightPopLeftPush(queueKey, fetchedKey);
-                if (jobId != null) break;
+                var queueName = queues[i];
+                var jobId = DequeueJob(queueName);
+                if (jobId != null)
+                    return OnJobFetched(jobId, queueName);
             }
 
-            if (jobId == null)
-                return null;
+            return null;
+        }
 
+        private string DequeueJob(string queueName)
+        {
+            var queueKey = _storage.GetRedisKey($"queue:{queueName}");
+            var fetchedKey = _storage.GetRedisKey($"queue:{queueName}:dequeued");
+            var jobId = Redis.ListRightPopLeftPush(queueKey, fetchedKey);
+            return jobId;
+        }
+
+        private IFetchedJob OnJobFetched(string jobId, string queueName)
+        {
             // The job was fetched by the server. To provide reliability,
             // we should ensure, that the job will be performed and acquired
             // resources will be disposed even if the server will crash
@@ -491,13 +498,33 @@ namespace Hangfire.Redis.StackExchange
             Redis.HashSet(_storage.GetRedisKey(key), keyValuePairs.ToHashEntries());
         }
 
-        string IJobResourceRequirementAccessor.GetCpuRequest(string jobId)
+        string IRedisConnectionForResourceBudgetManager.DequeueJob(string queueName)
+        {
+            return DequeueJob(queueName);
+        }
+
+        IFetchedJob IRedisConnectionForResourceBudgetManager.OnJobFetched(string jobId, string queueName)
+        {
+            return OnJobFetched(jobId, queueName);
+        }
+
+        void IRedisConnectionForResourceBudgetManager.Requeue(string jobId, string queueName)
+        {
+            RedisFetchedJob.Requeue(_storage, Redis, jobId, queueName);
+        }
+
+        void IRedisConnectionForResourceBudgetManager.Sleep(TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            _subscription.WaitForJob(_fetchTimeout, cancellationToken);
+        }
+
+        string IRedisConnectionForResourceBudgetManager.GetCpuRequest(string jobId)
         {
             return SerializationHelper.Deserialize<string>(
                 GetJobParameter(jobId, "CpuRequest"));
         }
 
-        string IJobResourceRequirementAccessor.GetMemoryRequest(string jobId)
+        string IRedisConnectionForResourceBudgetManager.GetMemoryRequest(string jobId)
         {
             return SerializationHelper.Deserialize<string>(
                 GetJobParameter(jobId, "MemoryRequest"));
