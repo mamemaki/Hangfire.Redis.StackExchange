@@ -14,80 +14,59 @@
 // You should have received a copy of the GNU Lesser General Public
 // License along with Hangfire.Redis.StackExchange. If not, see <http://www.gnu.org/licenses/>.
 
-using Hangfire.Common;
 using Hangfire.Logging;
 using Hangfire.Storage;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 
 namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
 {
     internal class ResourceBudgetManager
     {
-        class QueueConfig
+        class ResourceLimitTypeInternal
         {
-            public int CpuRequest { get; set; }
-            public long MemoryRequest { get; set; }
-            public bool FetchIndividualCpuRequests { get; set; }
-            public bool FetchIndividualMemoryRequests { get; set; }
+            public ResourceLimitType Type { get; set; }
+            public long Limit { get; set; }
+            public long DefaultRequest { get; set; }
+
+            public override string ToString() => Type.ToString();
         }
 
         private static readonly ILog Logger = LogProvider.For<ResourceBudgetManager>();
 
         private readonly object lockObj = new object();
         private readonly IDictionary<string, FetchedJobInfo> _fetchedJobs;
-        private readonly int _cpuLimit;
-        private readonly long _memoryLimit;
-        private readonly IDictionary<string, QueueConfig> _queueConfigDict;
-        private bool? _isUsageLimitReachedResultCache;
+        private readonly List<ResourceLimitTypeInternal> _resourceLimitTypes;
+        private readonly TimeSpan _usageLimitReachedWaitTimeBase;
+        private readonly Dictionary<string, Dictionary<string, string>> _jobResourceRequestsCache;
         private int _consecutiveLimitReachedCount;
-        private TimeSpan _usageLimitReachedWaitTimeBase;
 
         public ResourceBudgetManager(RedisStorageOptions options)
         {
             _fetchedJobs = new Dictionary<string, FetchedJobInfo>();
 
-            _usageLimitReachedWaitTimeBase = options.UsageLimitReachedWaitTimeBase;
-            _cpuLimit = Environment.ProcessorCount * 1000;
-            if (options.CpuLimit != null)
-                _cpuLimit = Utils.ConvertStringToCpuMilliseconds(options.CpuLimit);
-
-            if (options.MemoryLimit != null)
+            _resourceLimitTypes = options.ResourceLimitTypes.Select(s =>
             {
-                _memoryLimit = Utils.ConvertStringToMemoryBytes(options.MemoryLimit);
-            }
-            else
-            {
-                //TODO: Replace to 'GC.GetGCMemoryInfo().TotalAvailableMemoryBytes' when we upgrade to netstandard3.0
-                _memoryLimit = 10L * 1024 * 1024 * 1024;    // 10Gi
-            }
-
-            _queueConfigDict = new Dictionary<string, QueueConfig>();
-            foreach (var queueOption in options.QueueOptions)
-            {
-                if (string.IsNullOrEmpty(queueOption.QueueName))
-                    throw new Exception($"QueueName must be set");
-                _queueConfigDict[queueOption.QueueName] = new QueueConfig()
+                return new ResourceLimitTypeInternal
                 {
-                    CpuRequest = Utils.ConvertStringToCpuMilliseconds(queueOption.CpuRequest),
-                    MemoryRequest = Utils.ConvertStringToMemoryBytes(queueOption.MemoryRequest),
-                    FetchIndividualCpuRequests = queueOption.FetchIndividualCpuRequests,
-                    FetchIndividualMemoryRequests = queueOption.FetchIndividualMemoryRequests,
+                    Type = s,
+                    Limit = s.DeserializeResourceLimitValue(s.Limit),
+                    DefaultRequest = s.DeserializeResourceLimitValue(s.DefaultRequest),
                 };
-            }
+            }).ToList();
+            _usageLimitReachedWaitTimeBase = options.UsageLimitReachedWaitTimeBase;
+            _jobResourceRequestsCache = new Dictionary<string, Dictionary<string, string>>();
         }
 
         internal IDictionary<string, FetchedJobInfo> FetchedJobs => _fetchedJobs;
-        internal int CpuLimit => _cpuLimit;
-        internal long MemoryLimit => _memoryLimit;
 
         public void RemoveFetchedJob(RedisFetchedJob fetchedJob)
         {
             lock (lockObj)
             {
                 _fetchedJobs.Remove(fetchedJob.JobId);
-                _isUsageLimitReachedResultCache = null;
             }
         }
 
@@ -97,7 +76,6 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
             {
                 Job = fetchedJob,
             });
-            _isUsageLimitReachedResultCache = null;
         }
 
         public IFetchedJob TryFetchJob(string[] queues, IRedisConnectionForResourceBudgetManager redisConn,
@@ -113,6 +91,8 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
 
             lock (lockObj)
             {
+                _jobResourceRequestsCache.Clear();
+
                 if (IsUsageLimitReached(redisConn))
                 {
                     _consecutiveLimitReachedCount++;
@@ -169,78 +149,67 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
         private bool IsUsageLimitReached(IRedisConnectionForResourceBudgetManager redisConn,
             string newJobId = null, string newJobQueue = null)
         {
-            if (_isUsageLimitReachedResultCache.HasValue)
-                return _isUsageLimitReachedResultCache.Value;
-
-            var cpuUsage = GetFetchedJobsCpuUsage(redisConn);
-            int newJobCpuReq = 0;
-            if (newJobId != null && newJobQueue != null)
-                newJobCpuReq = GetJobCpuUsage(redisConn, newJobId, newJobQueue);
-            if (cpuUsage + newJobCpuReq >= _cpuLimit)
+            foreach (var resourceLimitType in _resourceLimitTypes)
             {
-                Logger.InfoFormat("The CPU usage limit({0}) reached. (fetchedJobs={1}, newJob={2})", 
-                    _cpuLimit, cpuUsage, newJobCpuReq);
-                return (_isUsageLimitReachedResultCache = true).Value;
+                var resUsage = GetFetchedJobsResourceUsage(resourceLimitType, redisConn);
+                var newJobResReq = 0L;
+                if (newJobId != null && newJobQueue != null)
+                    newJobResReq = GetJobResourceUsage(resourceLimitType, redisConn, newJobId);
+                if (resUsage + newJobResReq >= resourceLimitType.Limit)
+                {
+                    Logger.InfoFormat("The resource usage limit({0}) reached. (fetchedJobs={1}, newJob={2}, newJobId={3})",
+                        resourceLimitType.Limit, resUsage, newJobResReq, newJobId);
+                    return true;
+                }
             }
 
-            var memoryUsage = GetFetchedJobsMemoryUsage(redisConn);
-            long newJobMemoryReq = 0;
-            if (newJobId != null && newJobQueue != null)
-                newJobMemoryReq = GetJobMemoryUsage(redisConn, newJobId, newJobQueue);
-            if (memoryUsage + newJobMemoryReq >= _memoryLimit)
+            return false;
+        }
+
+        private Dictionary<string, string> GetJobResourceRequests(
+            IRedisConnectionForResourceBudgetManager redisConn, string jobId)
+        {
+            if (_jobResourceRequestsCache.TryGetValue(jobId, out var jobResourceRequests))
             {
-                Logger.InfoFormat("The Memory usage limit({0}) reached. (fetchedJobs={1}, newJob={2})", 
-                    _memoryLimit, memoryUsage, newJobMemoryReq);
-                return (_isUsageLimitReachedResultCache = true).Value;
+                return jobResourceRequests;
             }
 
-            return (_isUsageLimitReachedResultCache = false).Value;
+            jobResourceRequests = redisConn.GetJobResourceRequests(jobId);
+            _jobResourceRequestsCache[jobId] = jobResourceRequests;
+            return jobResourceRequests;
         }
 
-        private int GetJobCpuUsage(IRedisConnectionForResourceBudgetManager redisConn,
-            string jobId, string jobQueue)
+        private long GetJobResourceUsage(
+            ResourceLimitTypeInternal resourceLimitType,
+            IRedisConnectionForResourceBudgetManager redisConn,
+            string jobId)
         {
-            _queueConfigDict.TryGetValue(jobQueue, out var queueConfig);
-            if (queueConfig?.FetchIndividualCpuRequests == true)
-                return Utils.ConvertStringToCpuMilliseconds(redisConn.GetCpuRequest(jobId));
-            return queueConfig?.CpuRequest ?? 0;
+            if (resourceLimitType.Type.FetchIndividualJobRequests)
+            {
+                var jobResourceRequests = GetJobResourceRequests(redisConn, jobId);
+                var resVal = jobResourceRequests.GetValueOrDefault(resourceLimitType.Type.TypeName);
+                if (resVal != null)
+                    return resourceLimitType.Type.DeserializeResourceLimitValue(resVal);
+            }
+            return resourceLimitType.DefaultRequest;
         }
 
-        private int GetFetchedJobsCpuUsage(IRedisConnectionForResourceBudgetManager redisConn)
+        private long GetFetchedJobsResourceUsage(
+            ResourceLimitTypeInternal resourceLimitType,
+            IRedisConnectionForResourceBudgetManager redisConn)
         {
-            var totalCpuUsage = 0;
+            var totalResUsage = 0L;
             foreach (var fetchedJob in _fetchedJobs.Values)
             {
-                if (!fetchedJob.CpuUsage.HasValue)
+                var resTypeName = resourceLimitType.Type.TypeName;
+                if (!fetchedJob.ResourceUsages.TryGetValue(resTypeName, out var resUsage))
                 {
-                    fetchedJob.CpuUsage = GetJobCpuUsage(redisConn, fetchedJob.JobId, fetchedJob.Job.Queue);
+                    fetchedJob.ResourceUsages[resTypeName] = 
+                        GetJobResourceUsage(resourceLimitType, redisConn, fetchedJob.JobId);
                 }
-                totalCpuUsage += fetchedJob.CpuUsage.Value;
+                totalResUsage += fetchedJob.ResourceUsages[resTypeName].Value;
             }
-            return totalCpuUsage;
-        }
-
-        private long GetJobMemoryUsage(IRedisConnectionForResourceBudgetManager redisConn,
-            string jobId, string jobQueue)
-        {
-            _queueConfigDict.TryGetValue(jobQueue, out var queueConfig);
-            if (queueConfig?.FetchIndividualMemoryRequests == true)
-                return Utils.ConvertStringToMemoryBytes(redisConn.GetMemoryRequest(jobId));
-            return queueConfig?.MemoryRequest ?? 0;
-        }
-
-        private long GetFetchedJobsMemoryUsage(IRedisConnectionForResourceBudgetManager redisConn)
-        {
-            var totalMemoryUsage = 0L;
-            foreach (var fetchedJob in _fetchedJobs.Values)
-            {
-                if (!fetchedJob.MemoryUsage.HasValue)
-                {
-                    fetchedJob.MemoryUsage = GetJobMemoryUsage(redisConn, fetchedJob.JobId, fetchedJob.Job.Queue);
-                }
-                totalMemoryUsage += fetchedJob.MemoryUsage.Value;
-            }
-            return totalMemoryUsage;
+            return totalResUsage;
         }
     }
 }

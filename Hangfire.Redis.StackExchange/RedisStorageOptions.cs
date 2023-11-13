@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public
 // License along with Hangfire.Redis.StackExchange. If not, see <http://www.gnu.org/licenses/>.
 
+using Hangfire.Redis.StackExchange.ResourceBudgetManagement;
 using System;
 using System.Collections.Generic;
 
@@ -36,9 +37,11 @@ namespace Hangfire.Redis.StackExchange
             UseTransactions = true;
             UseResourceManagement = false;
             UsageLimitReachedWaitTimeBase = TimeSpan.FromSeconds(1);
-            CpuLimit = null;
-            MemoryLimit = null;
-            QueueOptions = new List<QueueOptions>();
+            ResourceLimitTypes = new List<ResourceLimitType>()
+            {
+                new ResourceLimitType_Cpu(),
+                new ResourceLimitType_Memory(),
+            };
         }
 
         public TimeSpan InvisibilityTimeout { get; set; }
@@ -53,8 +56,6 @@ namespace Hangfire.Redis.StackExchange
         public bool UseTransactions { get; set; }
         public bool UseResourceManagement { get; set; }
         public TimeSpan UsageLimitReachedWaitTimeBase { get; set; }
-        public string CpuLimit { get; set; }
-        public string MemoryLimit { get; set; }
-        public IList<QueueOptions> QueueOptions { get; set; }
+        public List<ResourceLimitType> ResourceLimitTypes { get; set; }
     }
 }

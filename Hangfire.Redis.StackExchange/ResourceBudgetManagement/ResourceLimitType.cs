@@ -14,15 +14,15 @@
 // You should have received a copy of the GNU Lesser General Public
 // License along with Hangfire.Redis.StackExchange. If not, see <http://www.gnu.org/licenses/>.
 
-namespace Hangfire.Redis.StackExchange
+namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
 {
-    public class QueueOptions
+    public abstract class ResourceLimitType
     {
-        public string QueueName { get; set; }
-
-        public string CpuRequest { get; set; }
-        public string MemoryRequest { get; set; }
-        public bool FetchIndividualCpuRequests { get; set; }
-        public bool FetchIndividualMemoryRequests { get; set; }
+        public virtual string Limit { get; set; }
+        public virtual string DefaultLimit { get; }
+        public virtual string DefaultRequest { get; set; }
+        public virtual bool FetchIndividualJobRequests { get; set; }
+        public abstract string TypeName { get; }
+        public abstract long DeserializeResourceLimitValue(string val);
     }
 }

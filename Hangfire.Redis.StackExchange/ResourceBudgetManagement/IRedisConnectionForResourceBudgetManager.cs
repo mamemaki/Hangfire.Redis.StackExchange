@@ -12,7 +12,6 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
         IFetchedJob OnJobFetched(string jobId, string queueName);
         void Requeue(string jobId, string queueName);
         void Sleep(TimeSpan timeout, CancellationToken cancellationToken);
-        string GetCpuRequest(string jobId);
-        string GetMemoryRequest(string jobId);
+        Dictionary<string, string> GetJobResourceRequests(string jobId);
     }
 }

@@ -31,20 +31,23 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
         class RedisStorageConnectionMock : IRedisConnectionForResourceBudgetManager
         {
             private ResourceBudgetManager _resourceBudgetManager;
-            private Queue<JobInfo> _jobQueue;
+            private List<JobInfo> _jobs;
+            private Queue<JobInfo> _enqueuedJobs;
             private List<JobInfo> _dequeuedJobs;
             public RedisStorageConnectionMock(ResourceBudgetManager resourceBudgetManager)
             {
                 _resourceBudgetManager = resourceBudgetManager;
-                _jobQueue = new Queue<JobInfo>();
+                _jobs = new List<JobInfo>();
+                _enqueuedJobs = new Queue<JobInfo>();
                 _dequeuedJobs = new List<JobInfo>();
             }
 
-            public Queue<JobInfo> JobQueue => _jobQueue;
+            public Queue<JobInfo> EnqueuedJobs => _enqueuedJobs;
+            public List<JobInfo> Jobs => _jobs;
 
             public string DequeueJob(string queueName)
             {
-                if (_jobQueue.TryDequeue(out var fetchedJob))
+                if (_enqueuedJobs.TryDequeue(out var fetchedJob))
                 {
                     _dequeuedJobs.Add(fetchedJob);
                     return fetchedJob.FetchedJob.JobId;
@@ -65,27 +68,16 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
             {
             }
 
-            public string GetCpuRequest(string jobId)
+            public Dictionary<string, string> GetJobResourceRequests(string jobId)
             {
-                var job = _jobQueue.FirstOrDefault(x => x.FetchedJob.JobId == jobId);
+                var job = _jobs.FirstOrDefault(x => x.FetchedJob.JobId == jobId);
                 if (job == null)
-                    return null;
-                return job.CpuRequest;
-            }
-
-            public string GetMemoryRequest(string jobId)
-            {
-                var job = _jobQueue.FirstOrDefault(x => x.FetchedJob.JobId == jobId);
-                if (job == null)
-                    return null;
-                return job.MemoryRequest;
-            }
-
-            public IFetchedJob TryFetchJob(string[] queues)
-            {
-                if (_jobQueue.TryDequeue(out var fetchedJob))
-                    return fetchedJob.FetchedJob;
-                return null;
+                    return default;
+                return new Dictionary<string, string>()
+                {
+                    { "Cpu", job.CpuRequest },
+                    { "Memory", job.MemoryRequest },
+                };
             }
         }
 
@@ -97,17 +89,19 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
         {
             _redisStorageOptionsDefault = new RedisStorageOptions()
             {
-                CpuLimit = "1.0",
-                MemoryLimit = "1Gi",
-                QueueOptions = new List<QueueOptions>()
+                ResourceLimitTypes = new List<ResourceLimitType>()
                 {
-                    new QueueOptions()
+                    new ResourceLimitType_Cpu()
                     {
-                        QueueName = "q1",
-                        CpuRequest = "0.6",
-                        MemoryRequest = "400Mi",
-                        FetchIndividualCpuRequests = true,
-                        FetchIndividualMemoryRequests = true,
+                        Limit = "1.0",
+                        DefaultRequest = "0.6",
+                        FetchIndividualJobRequests = true,
+                    },
+                    new ResourceLimitType_Memory()
+                    {
+                        Limit = "1Gi",
+                        DefaultRequest = "400Mi",
+                        FetchIndividualJobRequests = true,
                     },
                 },
             };
@@ -115,14 +109,18 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
 
         public static IEnumerable<object[]> TryFetchJobTestData => new List<object[]>()
         {
-            new object[] { new JobInfo[] {}, null },
+            new object[] { new JobInfo[] {}, new JobInfo[] {}, null },
             new object[] {
                 new JobInfo[] {
                     new JobInfo("job1", "q1", "0.5", "150Mi"),
                 },
-                "job1",
+                new JobInfo[] {
+                    new JobInfo("job2", "q1", "0.4", "150Mi"),
+                },
+                "job2",
             },
             new object[] {
+                new JobInfo[] {},
                 new JobInfo[] {
                     new JobInfo("job1", "q1", "0.5", "1500Mi"),
                 },
@@ -131,6 +129,8 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
             new object[] {
                 new JobInfo[] {
                     new JobInfo("job1", "q1", "0.8", "150Mi"),
+                },
+                new JobInfo[] {
                     new JobInfo("job2", "q1", "0.5", "150Mi"),
                 },
                 null,
@@ -139,16 +139,22 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
 
         [Theory]
         [MemberData(nameof(TryFetchJobTestData))]
-        internal void TryFetchJob(JobInfo[] jobs, string expectedFetchedJobId)
+        internal void TryFetchJob(JobInfo[] fetchedJobs, JobInfo[] enqueuedJobs, string expectedFetchedJobId)
         {
             var cts = new CancellationTokenSource();
             var resourceBudgetManager = new ResourceBudgetManager(_redisStorageOptionsDefault);
             var connection = new RedisStorageConnectionMock(resourceBudgetManager);
 
-            foreach (var job in jobs)
+            foreach (var fetchedJob in fetchedJobs)
             {
-                resourceBudgetManager.AddFetchedJob(job.FetchedJob);
-                connection.JobQueue.Enqueue(job);
+                resourceBudgetManager.AddFetchedJob(fetchedJob.FetchedJob);
+                connection.Jobs.Add(fetchedJob);
+            }
+
+            foreach (var enqueuedJob in enqueuedJobs)
+            {
+                connection.EnqueuedJobs.Enqueue(enqueuedJob);
+                connection.Jobs.Add(enqueuedJob);
             }
 
             var fecthedJobActual = resourceBudgetManager.TryFetchJob(

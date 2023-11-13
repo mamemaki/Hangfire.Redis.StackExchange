@@ -518,16 +518,10 @@ namespace Hangfire.Redis.StackExchange
             _subscription.WaitForJob(_fetchTimeout, cancellationToken);
         }
 
-        string IRedisConnectionForResourceBudgetManager.GetCpuRequest(string jobId)
+        Dictionary<string, string> IRedisConnectionForResourceBudgetManager.GetJobResourceRequests(string jobId)
         {
-            return SerializationHelper.Deserialize<string>(
-                GetJobParameter(jobId, "CpuRequest"));
-        }
-
-        string IRedisConnectionForResourceBudgetManager.GetMemoryRequest(string jobId)
-        {
-            return SerializationHelper.Deserialize<string>(
-                GetJobParameter(jobId, "MemoryRequest"));
+            return SerializationHelper.Deserialize<Dictionary<string, string>>(
+                GetJobParameter(jobId, "ResourceRequests"));
         }
     }
 }
