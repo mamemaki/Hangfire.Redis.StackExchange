@@ -1,4 +1,4 @@
-﻿// Copyright © 2013-2015 Sergey Odinokov, Marco Casamento
+// Copyright © 2013-2015 Sergey Odinokov, Marco Casamento
 // This software is based on https://github.com/HangfireIO/Hangfire.Redis
 
 // Hangfire.Redis.StackExchange is free software: you can redistribute it and/or modify
@@ -14,15 +14,13 @@
 // You should have received a copy of the GNU Lesser General Public
 // License along with Hangfire.Redis.StackExchange. If not, see <http://www.gnu.org/licenses/>.
 
+using System.Collections.Generic;
+
 namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
 {
     public abstract class ResourceLimitType
     {
-        public virtual string Limit { get; set; }
-        public virtual string DefaultLimit { get; }
-        public virtual string DefaultRequest { get; set; }
-        public virtual bool FetchIndividualJobRequests { get; set; }
-        public abstract string TypeName { get; }
-        public abstract long DeserializeResourceLimitValue(string val);
+        public abstract DeterminationResult IsUsageLimitReached(
+            List<JobResourceRequests> fetchedJobReqs, JobResourceRequests newJobsJobReq = null);
     }
 }

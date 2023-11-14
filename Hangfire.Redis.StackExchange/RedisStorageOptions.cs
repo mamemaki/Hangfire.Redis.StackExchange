@@ -1,4 +1,4 @@
-﻿// Copyright © 2013-2015 Sergey Odinokov, Marco Casamento
+// Copyright © 2013-2015 Sergey Odinokov, Marco Casamento
 // This software is based on https://github.com/HangfireIO/Hangfire.Redis
 
 // Hangfire.Redis.StackExchange is free software: you can redistribute it and/or modify
@@ -36,6 +36,7 @@ namespace Hangfire.Redis.StackExchange
             LifoQueues = new string[0];
             UseTransactions = true;
             UseResourceManagement = false;
+            FetchIndividualJobRequests = true;
             UsageLimitReachedWaitTimeBase = TimeSpan.FromSeconds(1);
             ResourceLimitTypes = new List<ResourceLimitType>()
             {
@@ -55,6 +56,12 @@ namespace Hangfire.Redis.StackExchange
         public string[] LifoQueues { get; set; }
         public bool UseTransactions { get; set; }
         public bool UseResourceManagement { get; set; }
+        /// <summary>
+        /// If true, the resource request value for each job is read from storage.
+        /// If false or not in storage, the default resource request value is used.
+        /// Default is true.
+        /// </summary>
+        public bool FetchIndividualJobRequests { get; set; }
         public TimeSpan UsageLimitReachedWaitTimeBase { get; set; }
         public List<ResourceLimitType> ResourceLimitTypes { get; set; }
     }

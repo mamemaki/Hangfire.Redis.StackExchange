@@ -1,4 +1,4 @@
-﻿// Copyright © 2013-2015 Sergey Odinokov, Marco Casamento
+// Copyright © 2013-2015 Sergey Odinokov, Marco Casamento
 // This software is based on https://github.com/HangfireIO/Hangfire.Redis
 
 // Hangfire.Redis.StackExchange is free software: you can redistribute it and/or modify
@@ -25,39 +25,22 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
 {
     internal class ResourceBudgetManager
     {
-        class ResourceLimitTypeInternal
-        {
-            public ResourceLimitType Type { get; set; }
-            public long Limit { get; set; }
-            public long DefaultRequest { get; set; }
-
-            public override string ToString() => Type.ToString();
-        }
-
         private static readonly ILog Logger = LogProvider.For<ResourceBudgetManager>();
 
         private readonly object lockObj = new object();
         private readonly IDictionary<string, FetchedJobInfo> _fetchedJobs;
-        private readonly List<ResourceLimitTypeInternal> _resourceLimitTypes;
+        private readonly List<ResourceLimitType> _resourceLimitTypes;
+        private readonly bool _fetchIndividualJobRequests;
         private readonly TimeSpan _usageLimitReachedWaitTimeBase;
-        private readonly Dictionary<string, Dictionary<string, string>> _jobResourceRequestsCache;
         private int _consecutiveLimitReachedCount;
 
         public ResourceBudgetManager(RedisStorageOptions options)
         {
             _fetchedJobs = new Dictionary<string, FetchedJobInfo>();
 
-            _resourceLimitTypes = options.ResourceLimitTypes.Select(s =>
-            {
-                return new ResourceLimitTypeInternal
-                {
-                    Type = s,
-                    Limit = s.DeserializeResourceLimitValue(s.Limit),
-                    DefaultRequest = s.DeserializeResourceLimitValue(s.DefaultRequest),
-                };
-            }).ToList();
+            _resourceLimitTypes = options.ResourceLimitTypes;
+            _fetchIndividualJobRequests = options.FetchIndividualJobRequests;
             _usageLimitReachedWaitTimeBase = options.UsageLimitReachedWaitTimeBase;
-            _jobResourceRequestsCache = new Dictionary<string, Dictionary<string, string>>();
         }
 
         internal IDictionary<string, FetchedJobInfo> FetchedJobs => _fetchedJobs;
@@ -91,15 +74,14 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
 
             lock (lockObj)
             {
-                _jobResourceRequestsCache.Clear();
-
-                if (IsUsageLimitReached(redisConn))
+                var (limitReached, _) = IsUsageLimitReached(redisConn);
+                if (limitReached)
                 {
                     _consecutiveLimitReachedCount++;
                     return null;
                 }
 
-                var limitReached = false;
+                limitReached = false;
                 for (int i = 0; i < queues.Length; i++)
                 {
                     var (fecthedJob, limitReached2) = TryFetchJob(queues[i], redisConn);
@@ -124,7 +106,7 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
             var jobId = redisConn.DequeueJob(queueName);
             if (jobId != null)
             {
-                var limitReached = IsUsageLimitReached(redisConn, jobId, queueName);
+                var (limitReached, newJobReq) = IsUsageLimitReached(redisConn, jobId);
                 if (limitReached)
                 {
                     // Requeue to head of the queue
@@ -133,7 +115,10 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
                     return (null, true);
                 }
 
-                return (redisConn.OnJobFetched(jobId, queueName), false);
+                var fetchedJob = redisConn.OnJobFetched(jobId, queueName);
+                if (_fetchedJobs.TryGetValue(jobId, out var fetchedJob2))
+                    fetchedJob2.ResourceRequests = newJobReq;
+                return (fetchedJob, false);
             }
 
             return (null, false);
@@ -144,72 +129,57 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
         /// </summary>
         /// <param name="redisConn"></param>
         /// <param name="newJobId">ID for the new job</param>
-        /// <param name="newJobQueue">Queue name for the new job</param>
         /// <returns>Return true if the current and new job resource usage reaches limit, otherwise return false</returns>
-        private bool IsUsageLimitReached(IRedisConnectionForResourceBudgetManager redisConn,
-            string newJobId = null, string newJobQueue = null)
+        private (bool, JobResourceRequests) IsUsageLimitReached(IRedisConnectionForResourceBudgetManager redisConn,
+            string newJobId = null)
         {
+            JobResourceRequests newJobReq = null;
+            if (newJobId != null)
+            {
+                Dictionary<string, string> jobReq = null;
+                if (_fetchIndividualJobRequests)
+                    jobReq = redisConn.GetJobResourceRequests(newJobId);
+                newJobReq = new JobResourceRequests(newJobId, jobReq);
+            }
+
             foreach (var resourceLimitType in _resourceLimitTypes)
             {
-                var resUsage = GetFetchedJobsResourceUsage(resourceLimitType, redisConn);
-                var newJobResReq = 0L;
-                if (newJobId != null && newJobQueue != null)
-                    newJobResReq = GetJobResourceUsage(resourceLimitType, redisConn, newJobId);
-                if (resUsage + newJobResReq >= resourceLimitType.Limit)
+                var fetchedJobReqs = GetFetchedJobResourceRequests(redisConn);
+
+                var ret = resourceLimitType.IsUsageLimitReached(fetchedJobReqs, newJobReq);
+                if (ret.LimitReached)
                 {
-                    Logger.InfoFormat("The resource usage limit({0}) reached. (fetchedJobs={1}, newJob={2}, newJobId={3})",
-                        resourceLimitType.Limit, resUsage, newJobResReq, newJobId);
-                    return true;
+                    Logger.InfoFormat("The {0} resource usage limit({1}) reached. (context={2})",
+                        resourceLimitType.GetType().Name, ret.Limit, DictToDebugString(ret.Context));
+                    return (true, null);
                 }
             }
 
-            return false;
+            return (false, newJobReq);
         }
 
-        private Dictionary<string, string> GetJobResourceRequests(
-            IRedisConnectionForResourceBudgetManager redisConn, string jobId)
+        private List<JobResourceRequests> GetFetchedJobResourceRequests(IRedisConnectionForResourceBudgetManager redisConn)
         {
-            if (_jobResourceRequestsCache.TryGetValue(jobId, out var jobResourceRequests))
-            {
-                return jobResourceRequests;
-            }
-
-            jobResourceRequests = redisConn.GetJobResourceRequests(jobId);
-            _jobResourceRequestsCache[jobId] = jobResourceRequests;
-            return jobResourceRequests;
-        }
-
-        private long GetJobResourceUsage(
-            ResourceLimitTypeInternal resourceLimitType,
-            IRedisConnectionForResourceBudgetManager redisConn,
-            string jobId)
-        {
-            if (resourceLimitType.Type.FetchIndividualJobRequests)
-            {
-                var jobResourceRequests = GetJobResourceRequests(redisConn, jobId);
-                var resVal = jobResourceRequests.GetValueOrDefault(resourceLimitType.Type.TypeName);
-                if (resVal != null)
-                    return resourceLimitType.Type.DeserializeResourceLimitValue(resVal);
-            }
-            return resourceLimitType.DefaultRequest;
-        }
-
-        private long GetFetchedJobsResourceUsage(
-            ResourceLimitTypeInternal resourceLimitType,
-            IRedisConnectionForResourceBudgetManager redisConn)
-        {
-            var totalResUsage = 0L;
+            var jobReqs = new List<JobResourceRequests>();
             foreach (var fetchedJob in _fetchedJobs.Values)
             {
-                var resTypeName = resourceLimitType.Type.TypeName;
-                if (!fetchedJob.ResourceUsages.TryGetValue(resTypeName, out var resUsage))
+                if (fetchedJob.ResourceRequests == null)
                 {
-                    fetchedJob.ResourceUsages[resTypeName] = 
-                        GetJobResourceUsage(resourceLimitType, redisConn, fetchedJob.JobId);
+                    Dictionary<string, string> jobReq = null;
+                    if (_fetchIndividualJobRequests)
+                        jobReq = redisConn.GetJobResourceRequests(fetchedJob.JobId);
+                    fetchedJob.ResourceRequests = new JobResourceRequests(
+                        fetchedJob.JobId, jobReq);
                 }
-                totalResUsage += fetchedJob.ResourceUsages[resTypeName].Value;
+
+                jobReqs.Add(fetchedJob.ResourceRequests);
             }
-            return totalResUsage;
+            return jobReqs;
+        }
+
+        private static string DictToDebugString<TKey, TValue>(ICollection<KeyValuePair<TKey, TValue>> dict)
+        {
+            return "[" + string.Join(",", dict.Select(kv => $"{kv.Key}: {kv.Value}").ToArray()) + "]";
         }
     }
 }

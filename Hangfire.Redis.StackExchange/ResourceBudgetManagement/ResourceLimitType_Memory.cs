@@ -15,19 +15,70 @@
 // License along with Hangfire.Redis.StackExchange. If not, see <http://www.gnu.org/licenses/>.
 
 using System;
+using System.Collections.Generic;
 
 namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
 {
     public class ResourceLimitType_Memory : ResourceLimitType
     {
-        //TODO: Replace to 'GC.GetGCMemoryInfo().TotalAvailableMemoryBytes' when we upgrade to netstandard3.0
-        public override string DefaultLimit { get; } = "10Gi";
+        /// <summary>
+        /// The resource usage limit. e.g. 600Mi
+        /// </summary>
+        public string Limit { get; set; }
 
-        public override string TypeName => "Memory";
+        /// <summary>
+        /// The default resource usage limit.
+        /// TODO: Replace to 'GC.GetGCMemoryInfo().TotalAvailableMemoryBytes' when we upgrade to netstandard3.0
+        /// </summary>
+        public string DefaultLimit { get; } = "10Gi";
 
-        public override long DeserializeResourceLimitValue(string val)
+        /// <summary>
+        /// The default resource request value for each job.
+        /// </summary>
+        public string DefaultRequest { get; set; }
+
+        private const string ResourceRequestPropName = "Memory";
+
+        public override DeterminationResult IsUsageLimitReached(
+            List<JobResourceRequests> fetchedJobReqs, JobResourceRequests newJobReq = null)
         {
-            return ConvertStringToMemoryBytes(val);
+            var limit = Limit ?? DefaultLimit;
+            var resUsage = GetFetchedJobsResourceUsage(fetchedJobReqs);
+            var newJobResReq = 0L;
+            if (newJobReq != null)
+                newJobResReq = GetJobResourceUsage(newJobReq);
+            var ret = new DeterminationResult();
+            ret.LimitReached = (resUsage + newJobResReq >= ConvertStringToMemoryBytes(limit));
+            ret.Limit = limit;
+            ret.Context = new Dictionary<string, string>()
+            {
+                { "resUsage", resUsage.ToString() },
+                { "newJobResReq", newJobResReq.ToString() },
+            };
+            return ret;
+        }
+
+        private long GetJobResourceUsage(JobResourceRequests jobReq)
+        {
+            if (jobReq is null)
+            {
+                throw new ArgumentNullException(nameof(jobReq));
+            }
+
+            var resVal = jobReq.ResourceRequests?.GetValueOrDefault(ResourceRequestPropName);
+            if (resVal != null)
+                return ConvertStringToMemoryBytes(resVal);
+            return ConvertStringToMemoryBytes(DefaultRequest);
+        }
+
+        private long GetFetchedJobsResourceUsage(List<JobResourceRequests> fetchedJobReqs)
+        {
+            var totalResUsage = 0L;
+            foreach (var jobReq in fetchedJobReqs)
+            {
+                totalResUsage += GetJobResourceUsage(jobReq);
+            }
+            return totalResUsage;
         }
 
         /// <summary>

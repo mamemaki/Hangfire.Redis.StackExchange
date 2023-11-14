@@ -15,18 +15,64 @@
 // License along with Hangfire.Redis.StackExchange. If not, see <http://www.gnu.org/licenses/>.
 
 using System;
+using System.Collections.Generic;
 
 namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
 {
     public class ResourceLimitType_Cpu : ResourceLimitType
     {
-        public override string DefaultLimit { get; } = Environment.ProcessorCount.ToString();
+        /// <summary>
+        /// The resource usage limit. e.g. 800m
+        /// </summary>
+        public string Limit { get; set; }
 
-        public override string TypeName => "Cpu";
+        /// <summary>
+        /// The default resource usage limit.
+        /// </summary>
+        public string DefaultLimit { get; } = Environment.ProcessorCount.ToString();
 
-        public override long DeserializeResourceLimitValue(string val)
+        /// <summary>
+        /// The default resource request value for each job.
+        /// </summary>
+        public string DefaultRequest { get; set; }
+
+        private const string ResourceRequestPropName = "Cpu";
+
+        public override DeterminationResult IsUsageLimitReached(
+            List<JobResourceRequests> fetchedJobReqs, JobResourceRequests newJobReq = null)
         {
-            return ConvertStringToCpuMilliseconds(val);
+            var limit = Limit ?? DefaultLimit;
+            var resUsage = GetFetchedJobsResourceUsage(fetchedJobReqs);
+            var newJobResReq = 0L;
+            if (newJobReq != null)
+                newJobResReq = GetJobResourceUsage(newJobReq);
+            var ret = new DeterminationResult();
+            ret.LimitReached = (resUsage + newJobResReq >= ConvertStringToCpuMilliseconds(limit));
+            ret.Limit = limit;
+            ret.Context = new Dictionary<string, string>()
+            {
+                { "resUsage", resUsage.ToString() },
+                { "newJobResReq", newJobResReq.ToString() },
+            };
+            return ret;
+        }
+
+        private long GetJobResourceUsage(JobResourceRequests jobReq)
+        {
+            var resVal = jobReq.ResourceRequests?.GetValueOrDefault(ResourceRequestPropName);
+            if (resVal != null)
+                return ConvertStringToCpuMilliseconds(resVal);
+            return ConvertStringToCpuMilliseconds(DefaultRequest);
+        }
+
+        private long GetFetchedJobsResourceUsage(List<JobResourceRequests> fetchedJobReqs)
+        {
+            var totalResUsage = 0L;
+            foreach (var jobReq in fetchedJobReqs)
+            {
+                totalResUsage += GetJobResourceUsage(jobReq);
+            }
+            return totalResUsage;
         }
 
         /// <summary>

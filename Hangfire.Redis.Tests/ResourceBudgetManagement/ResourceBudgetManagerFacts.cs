@@ -1,4 +1,4 @@
-﻿using Hangfire.Redis.StackExchange;
+using Hangfire.Redis.StackExchange;
 using Hangfire.Redis.StackExchange.ResourceBudgetManagement;
 using Hangfire.Storage;
 using Moq;
@@ -89,19 +89,18 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
         {
             _redisStorageOptionsDefault = new RedisStorageOptions()
             {
+                FetchIndividualJobRequests = true,
                 ResourceLimitTypes = new List<ResourceLimitType>()
                 {
                     new ResourceLimitType_Cpu()
                     {
                         Limit = "1.0",
                         DefaultRequest = "0.6",
-                        FetchIndividualJobRequests = true,
                     },
                     new ResourceLimitType_Memory()
                     {
                         Limit = "1Gi",
                         DefaultRequest = "400Mi",
-                        FetchIndividualJobRequests = true,
                     },
                 },
             };
