@@ -520,8 +520,10 @@ namespace Hangfire.Redis.StackExchange
 
         Dictionary<string, string> IRedisConnectionForResourceBudgetManager.GetJobResourceRequests(string jobId)
         {
-            return SerializationHelper.Deserialize<Dictionary<string, string>>(
-                GetJobParameter(jobId, "ResourceRequests"));
+            var val = GetJobParameter(jobId, "ResourceRequests");
+            if (string.IsNullOrEmpty(val))
+                return null;
+            return SerializationHelper.Deserialize<Dictionary<string, string>>(val);
         }
     }
 }
