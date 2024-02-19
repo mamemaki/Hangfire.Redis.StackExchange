@@ -142,10 +142,10 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
                 newJobReq = new JobResourceRequests(newJobId, jobReq);
             }
 
+            var fetchedJobReqs = GetFetchedJobResourceRequests(redisConn);
+
             foreach (var resourceLimitType in _resourceLimitTypes)
             {
-                var fetchedJobReqs = GetFetchedJobResourceRequests(redisConn);
-
                 var ret = resourceLimitType.IsUsageLimitReached(fetchedJobReqs, newJobReq);
                 if (ret.LimitReached)
                 {
