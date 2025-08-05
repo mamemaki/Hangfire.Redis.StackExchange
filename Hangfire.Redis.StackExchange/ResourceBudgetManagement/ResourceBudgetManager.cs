@@ -67,7 +67,8 @@ namespace Hangfire.Redis.StackExchange.ResourceBudgetManagement
             // Sleep if the limit was reached last time
             if (_consecutiveLimitReachedCount > 0)
             {
-                var waitTime = _usageLimitReachedWaitTimeBase * Math.Min(_consecutiveLimitReachedCount, 60);
+                var waitTime = new TimeSpan(_usageLimitReachedWaitTimeBase.Ticks * 
+                    TimeSpan.FromMinutes(Math.Min(_consecutiveLimitReachedCount, 60)).Ticks);
                 Logger.InfoFormat("Sleep {0} before fetch next job", waitTime);
                 redisConn.Sleep(waitTime, cancellationToken);
             }

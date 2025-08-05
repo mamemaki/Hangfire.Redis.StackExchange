@@ -22,7 +22,7 @@ namespace Hangfire.Redis.Tests.ResourceBudgetManagement
             public JobInfo(string jobId, string queue,
                 string cpuRequest = null, string memoryRequest = null)
             {
-                FetchedJob = new RedisFetchedJob(_storage.Object, _redis.Object, jobId, queue);
+                FetchedJob = new RedisFetchedJob(_storage.Object, _redis.Object, jobId, queue, null);
                 CpuRequest = cpuRequest;
                 MemoryRequest = memoryRequest;
             }

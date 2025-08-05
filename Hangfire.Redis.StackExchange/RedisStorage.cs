@@ -1,4 +1,4 @@
-﻿// Copyright ?2013-2015 Sergey Odinokov, Marco Casamento
+﻿// Copyright © 2013-2015 Sergey Odinokov, Marco Casamento
 // This software is based on https://github.com/HangfireIO/Hangfire.Redis
 
 // Hangfire.Redis.StackExchange is free software: you can redistribute it and/or modify
@@ -37,12 +37,30 @@ namespace Hangfire.Redis.StackExchange
         private readonly ConfigurationOptions _redisOptions;
         private readonly ResourceBudgetManager _resourceBudgetManager;
 
+        private readonly Dictionary<string, bool> _features =
+            new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+            {
+                { JobStorageFeatures.ExtendedApi, true }, 
+                { JobStorageFeatures.JobQueueProperty, true }, 
+                { JobStorageFeatures.Connection.BatchedGetFirstByLowest, true }, 
+                { JobStorageFeatures.Connection.GetUtcDateTime, true }, 
+                { JobStorageFeatures.Connection.GetSetContains, true }, 
+                { JobStorageFeatures.Connection.LimitedGetSetCount, true }, 
+                { JobStorageFeatures.Transaction.AcquireDistributedLock, true }, 
+                { JobStorageFeatures.Transaction.CreateJob, true }, // overridden in constructor
+                { JobStorageFeatures.Transaction.SetJobParameter, true}, // overridden in constructor 
+                { JobStorageFeatures.Transaction.RemoveFromQueue(typeof(RedisFetchedJob)), true }, // overridden in constructor
+                { JobStorageFeatures.Monitoring.DeletedStateGraphs, true }, 
+                { JobStorageFeatures.Monitoring.AwaitingJobs, true }
+            };
+
         public RedisStorage()
-            : this("localhost:6379")
+            : this("localhost:6379", null, null)
         {
         }
 
         public RedisStorage(IConnectionMultiplexer connectionMultiplexer, RedisStorageOptions options = null)
+            : this("UseConnectionMultiplexer", connectionMultiplexer, options)
         {
             _options = options ?? new RedisStorageOptions();
 
@@ -50,25 +68,42 @@ namespace Hangfire.Redis.StackExchange
             _redisOptions = ConfigurationOptions.Parse(_connectionMultiplexer.Configuration);
             
             _subscription = new RedisSubscription(this, _connectionMultiplexer.GetSubscriber());
-            if (_options.UseResourceManagement)
-                _resourceBudgetManager = new ResourceBudgetManager(_options);
         }
 
         public RedisStorage(string connectionString, RedisStorageOptions options = null)
+            : this(connectionString, null, options)
         {
-            if (connectionString == null) throw new ArgumentNullException(nameof(connectionString));
+        }
 
-            _redisOptions = ConfigurationOptions.Parse(connectionString);
+        private RedisStorage(string connectionString, IConnectionMultiplexer connectionMultiplexer, 
+            RedisStorageOptions options = null)
+        {
+            if (connectionString == null)
+                throw new ArgumentNullException(nameof(connectionString));
+            if (connectionString == "UseConnectionMultiplexer" && connectionMultiplexer == null)
+                throw new ArgumentNullException(nameof(connectionMultiplexer));
+
+            _connectionMultiplexer = connectionMultiplexer ?? ConnectionMultiplexer.Connect(connectionString);
+
+            _redisOptions = ConfigurationOptions.Parse(_connectionMultiplexer.Configuration);
 
             _options = options ?? new RedisStorageOptions
             {
                 Db = _redisOptions.DefaultDatabase ?? 0
             };
 
-            _connectionMultiplexer = ConnectionMultiplexer.Connect(connectionString);
+            SetTransactionalFeatures();
+
             _subscription = new RedisSubscription(this, _connectionMultiplexer.GetSubscriber());
             if (_options.UseResourceManagement)
                 _resourceBudgetManager = new ResourceBudgetManager(_options);
+        }
+
+        private void SetTransactionalFeatures()
+        {
+            _features[JobStorageFeatures.Transaction.CreateJob] = _options.UseTransactions;
+            _features[JobStorageFeatures.Transaction.SetJobParameter] = _options.UseTransactions;
+            _features[JobStorageFeatures.Transaction.RemoveFromQueue(typeof(RedisFetchedJob))] = _options.UseTransactions; 
         }
 
         public string ConnectionString => _connectionMultiplexer.Configuration;
@@ -79,7 +114,7 @@ namespace Hangfire.Redis.StackExchange
 
         internal int DeletedListSize => _options.DeletedListSize;
         
-        internal string SubscriptionChannel => _subscription.Channel;
+        internal RedisChannel SubscriptionChannel => _subscription.Channel;
 
         internal string[] LifoQueues => _options.LifoQueues;
 
@@ -95,37 +130,20 @@ namespace Hangfire.Redis.StackExchange
         {
             if (featureId == null) throw new ArgumentNullException(nameof(featureId));
 
-            //TODO: Understand this feature. Is it SqlServeronly ? Does it somehow relates to redis {prefix} ? (think of clustered environments and keys that must go only on one server)
+            return _features.TryGetValue(featureId, out var isSupported)
+                ? isSupported
+                : base.HasFeature(featureId);
 
-            //if (_options.UseTransactionalAcknowledge &&
-            //    featureId.StartsWith(Worker.TransactionalAcknowledgePrefix, StringComparison.OrdinalIgnoreCase))
-            //{
-            //    return featureId.Equals(
-            //        Worker.TransactionalAcknowledgePrefix + nameof(SqlServerTimeoutJob),
-            //        StringComparison.OrdinalIgnoreCase);
-            //}
-
-            if ("BatchedGetFirstByLowestScoreFromSet".Equals(featureId, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            if ("Connection.GetUtcDateTime".Equals(featureId, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            if ("Job.Queue".Equals(featureId, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            return base.HasFeature(featureId);
         }
         public override IStorageConnection GetConnection()
         {
             var endPoints = _connectionMultiplexer.GetEndPoints(false);
-            IServer server = _connectionMultiplexer.GetServer(endPoints[0]);
+            IServer server = endPoints.Select(endPoint => _connectionMultiplexer.GetServer(endPoint))
+                .FirstOrDefault(s => s.IsConnected && !s.IsReplica);
+
+            if (server == null)
+                throw new RedisConnectionException(ConnectionFailureType.UnableToConnect, "No redis server available");
+                
             return new RedisConnection(this, server, _connectionMultiplexer.GetDatabase(Db), _subscription, _options.FetchTimeout);
         }
 
@@ -186,3 +204,4 @@ namespace Hangfire.Redis.StackExchange
         }
     }
 }
+

@@ -17,13 +17,12 @@ namespace Hangfire.Redis.StackExchange
         public RedisSubscription([NotNull] RedisStorage storage, [NotNull] ISubscriber subscriber)
         {
             _storage = storage ?? throw new ArgumentNullException(nameof(storage));
-            Channel = _storage.GetRedisKey("JobFetchChannel");
-
+            Channel = new RedisChannel(_storage.GetRedisKey("JobFetchChannel"), RedisChannel.PatternMode.Literal);
             _subscriber = subscriber ?? throw new ArgumentNullException(nameof(subscriber));
-            _subscriber.Subscribe(Channel, (channel, value) => _mre.Set());
+            
         }
 
-        public string Channel { get; }
+        public RedisChannel Channel { get; }
 
         public void WaitForJob(TimeSpan timeout, CancellationToken cancellationToken)
         {
@@ -33,13 +32,19 @@ namespace Hangfire.Redis.StackExchange
 
         void IServerComponent.Execute(CancellationToken cancellationToken)
         {
+            _subscriber.Subscribe(Channel, (channel, value) => _mre.Set());
             cancellationToken.WaitHandle.WaitOne();
 
             if (cancellationToken.IsCancellationRequested)
             {
                 _subscriber.Unsubscribe(Channel);
-                _mre.Dispose();
+                _mre.Reset();
             }
+        }
+
+        ~RedisSubscription()
+        {
+            _mre.Dispose();
         }
     }
 }

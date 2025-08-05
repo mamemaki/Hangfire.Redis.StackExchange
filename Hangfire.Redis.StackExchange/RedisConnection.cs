@@ -88,9 +88,10 @@ namespace Hangfire.Redis.StackExchange
             }
             else
             {
-                _ = Redis.SetAddAsync(_storage.GetRedisKey("servers"), serverId);
+                var tasks = new Task[3];
+                tasks[0] = Redis.SetAddAsync(_storage.GetRedisKey("servers"), serverId);
 
-                _ = Redis.HashSetAsync(
+                tasks[1] = Redis.HashSetAsync(
                     _storage.GetRedisKey($"server:{serverId}"),
                     new Dictionary<string, string>
                         {
@@ -100,10 +101,16 @@ namespace Hangfire.Redis.StackExchange
 
                 if (context.Queues.Length > 0)
                 {
-                    _ = Redis.ListRightPushAsync(
+                    tasks[2] = Redis.ListRightPushAsync(
                         _storage.GetRedisKey($"server:{serverId}:queues"),
                         context.Queues.ToRedisValues());
                 }
+                else
+                {
+                    tasks[2] = Task.CompletedTask;;
+                }
+
+                Task.WaitAll(tasks);
             }
         }
 
@@ -112,6 +119,7 @@ namespace Hangfire.Redis.StackExchange
             //the returned time is the time on the first server of the cluster
             return redisServer.Time();
         }
+        
         public override long GetSetCount([NotNull] IEnumerable<string> keys, int limit)
         {
             Task[] tasks = new Task[keys.Count()];
@@ -120,19 +128,20 @@ namespace Hangfire.Redis.StackExchange
             ConcurrentDictionary<string, long> results = new ConcurrentDictionary<string, long>();
             foreach (string key in keys)
             {
-                tasks[i] = batch.SortedSetLengthAsync(key, max: limit)
-                    .ContinueWith((Task<long> x) => results.TryAdd(key, x.Result));
+                tasks[i] = batch.SortedSetLengthAsync(_storage.GetRedisKey(key), max: limit)
+                    .ContinueWith((Task<long> x) => results.TryAdd(_storage.GetRedisKey(key), x.Result));
             }
             batch.Execute();
             Task.WaitAll(tasks);
             return results.Sum(x => x.Value);
         }
-
+        
         public override bool GetSetContains([NotNull] string key, [NotNull] string value)
         {
-            var sortedSetEntries = Redis.SortedSetScan(key, value);
+            var sortedSetEntries = Redis.SortedSetScan(_storage.GetRedisKey(key), value);
             return sortedSetEntries.Any();
         }
+        
         public override string CreateExpiredJob(
             [NotNull] Job job,
             [NotNull] IDictionary<string, string> parameters,
@@ -155,6 +164,11 @@ namespace Hangfire.Redis.StackExchange
                 { "Arguments", invocationData.Arguments },
                 { "CreatedAt", JobHelper.SerializeDateTime(createdAt) }
             };
+            
+            if (invocationData.Queue != null)
+            {
+                storedParameters.Add("Queue", invocationData.Queue);
+            }
 
             if (_storage.UseTransactions)
             {
@@ -163,13 +177,15 @@ namespace Hangfire.Redis.StackExchange
                 _ = transaction.HashSetAsync(_storage.GetRedisKey($"job:{jobId}"), storedParameters.ToHashEntries());
                 _ = transaction.KeyExpireAsync(_storage.GetRedisKey($"job:{jobId}"), expireIn);
 
-                // TODO: check return value
-                _ = transaction.Execute();
+                if (!transaction.Execute())
+                    throw new HangfireRedisTransactionException("Transaction Execution failure");
             }
             else
             {
-                _ = Redis.HashSetAsync(_storage.GetRedisKey($"job:{jobId}"), storedParameters.ToHashEntries());
-                _ = Redis.KeyExpireAsync(_storage.GetRedisKey($"job:{jobId}"), expireIn);
+                var tasks = new Task[2];
+                tasks[0] = Redis.HashSetAsync(_storage.GetRedisKey($"job:{jobId}"), storedParameters.ToHashEntries());
+                tasks[1] = Redis.KeyExpireAsync(_storage.GetRedisKey($"job:{jobId}"), expireIn);
+                Task.WaitAll(tasks);
             }
 
             return jobId;
@@ -245,16 +261,19 @@ namespace Hangfire.Redis.StackExchange
             // that is being inspected by the FetchedJobsWatcher instance.
             // Job's has the implicit 'Fetched' state.
 
+            //strip out microseconds from fetchTime as the serialized version will anyway truncate them
+            var fetchTime = new DateTime(DateTime.UtcNow.Ticks / 10000 * 10000);
+            
             _ = Redis.HashSet(
                 _storage.GetRedisKey($"job:{jobId}"),
                 "Fetched",
-                JobHelper.SerializeDateTime(DateTime.UtcNow));
+                JobHelper.SerializeDateTime(fetchTime));
 
             // Checkpoint #2. The job is in the implicit 'Fetched' state now.
             // This state stores information about fetched time. The job will
             // be re-queued when the JobTimeout will be expired.
 
-            return new RedisFetchedJob(_storage, Redis, jobId, queueName);
+            return new RedisFetchedJob(_storage, Redis, jobId, queueName, fetchTime);
         }
 
         public override Dictionary<string, string> GetAllEntriesFromHash([NotNull] string key)
@@ -316,6 +335,7 @@ namespace Hangfire.Redis.StackExchange
             var storedData = Redis.HashGetAll(_storage.GetRedisKey($"job:{jobId}"));
             if (storedData.Length == 0) return null;
 
+            string queue = storedData.FirstOrDefault(x => x.Name == "Queue").Value;
             string type = storedData.FirstOrDefault(x => x.Name == "Type").Value;
             string method = storedData.FirstOrDefault(x => x.Name == "Method").Value;
             string parameterTypes = storedData.FirstOrDefault(x => x.Name == "ParameterTypes").Value;
@@ -325,7 +345,7 @@ namespace Hangfire.Redis.StackExchange
             Job job = null;
             JobLoadException loadException = null;
 
-            var invocationData = new InvocationData(type, method, parameterTypes, arguments);
+            var invocationData = new InvocationData(type, method, parameterTypes, arguments, queue);
 
             try
             {
@@ -441,13 +461,15 @@ namespace Hangfire.Redis.StackExchange
             }
             else
             {
-                _ = Redis.SetRemoveAsync(_storage.GetRedisKey("servers"), serverId);
-                _ = Redis.KeyDeleteAsync(
+                var tasks = new Task[2];
+                tasks[0] = Redis.SetRemoveAsync(_storage.GetRedisKey("servers"), serverId);
+                tasks[1] = Redis.KeyDeleteAsync(
                     new RedisKey[]
                     {
                         _storage.GetRedisKey($"server:{serverId}"),
                         _storage.GetRedisKey($"server:{serverId}:queues")
                     });
+                Task.WaitAll(tasks);
             }
         }
 
@@ -510,7 +532,7 @@ namespace Hangfire.Redis.StackExchange
 
         void IRedisConnectionForResourceBudgetManager.Requeue(string jobId, string queueName)
         {
-            RedisFetchedJob.Requeue(_storage, Redis, jobId, queueName);
+            RedisFetchedJob.Requeue(_storage, Redis, jobId, queueName, true);
         }
 
         void IRedisConnectionForResourceBudgetManager.Sleep(TimeSpan timeout, CancellationToken cancellationToken)
